@@ -1,5 +1,6 @@
 import os
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from loguru import logger
@@ -12,10 +13,29 @@ from processing.ocr import ocr_processor
 from processing.llm import llm_processor
 from buffer_manager import buffer_manager, NarrationRecord
 
-app = FastAPI(title="Neurovox Companion Service")
-
 screen_thread = None
 audio_thread = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global screen_thread, audio_thread
+    logger.info("Starting Companion Service threads...")
+    
+    screen_thread = ScreenCaptureThread(fps=1.0)
+    screen_thread.start()
+    
+    audio_thread = AudioCaptureThread()
+    audio_thread.start()
+    
+    yield
+    
+    logger.info("Stopping capture threads...")
+    if screen_thread:
+        screen_thread.stop()
+    if audio_thread:
+        audio_thread.stop()
+
+app = FastAPI(title="Neurovox Companion Service", lifespan=lifespan)
 
 class NarrationRequest(BaseModel):
     mode: str = "concise" # "concise", "detailed", "ocr_only"
@@ -25,26 +45,6 @@ class NarrationRequest(BaseModel):
 class SettingsRequest(BaseModel):
     api_key: str
     model: str = None
-
-@app.on_event("startup")
-async def startup_event():
-    global screen_thread, audio_thread
-    logger.info("Starting Companion Service threads...")
-    
-    screen_thread = ScreenCaptureThread(fps=1.0)
-    screen_thread.start()
-    
-    audio_thread = AudioCaptureThread()
-    audio_thread.start()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    global screen_thread, audio_thread
-    logger.info("Stopping capture threads...")
-    if screen_thread:
-        screen_thread.stop()
-    if audio_thread:
-        audio_thread.stop()
 
 @app.post("/settings")
 def update_settings(req: SettingsRequest):
@@ -96,4 +96,4 @@ def health_check():
     }
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

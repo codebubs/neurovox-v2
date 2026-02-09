@@ -33,6 +33,7 @@ venv.bak/
 .python-version
 
 *.nvda-addon
+neurovox.exe
 
 .idea/
 .vscode/

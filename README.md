@@ -4,19 +4,25 @@ Neurovox is an advanced accessibility addon designed for blind and low-vision us
 
 ## Installation Instructions
 
-### Starting the Companion Server
+### Starting the Companion
+Download and run `neurovox.exe` from the [releases](https://github.com/codebubs/neurovox-v2/releases/latest) page.
+
+Or, run the server manually:
 1. Navigate to `server/`.
 2. `python -m venv venv`
 3. `.\venv\Scripts\activate` 
 4. `pip install -r requirements.txt`
 5. `python main.py`
 
-### Installing the NVDA Add-on
-1. Double-click `neurovox.nvda-addon`.
-2. Restart NVDA when prompted.
-3. Configure your Gemini API Key and desired Gemini Model via NVDA Menu > Preferences > Neurovox API Settings. The addon supports models that provide `generateContent` such as `gemini-1.5-flash` and `gemini-2.5-flash-lite`.
+To compile the release version of the server, run `build_exe.bat`.
 
-The addon can be built using `python build.py`.
+### Installing the NVDA Add-on
+1. Download `neurovox.nvda-addon` from the [releases](https://github.com/codebubs/neurovox-v2/releases/latest) page.
+2. Double-click `neurovox.nvda-addon`.
+3. Restart NVDA when prompted.
+4. Configure your Gemini API Key and desired Gemini Model via NVDA Menu > Preferences > Neurovox API Settings. The addon supports models that provide `generateContent` such as `gemini-1.5-flash` and `gemini-2.5-flash-lite`.
+
+The addon can be built using `python build_addon.py`.
 
 ## Gestures / Hotkeys
 You can configure these hotkeys in NVDA's Input Gestures dialog under the "Neurovox" category. The defaults are:
