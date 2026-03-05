@@ -37,6 +37,14 @@ class BufferManager:
         self.ocr_results: deque[OcrResult] = deque()
         self.narrations: deque[NarrationRecord] = deque(maxlen=20) # last 20 narrations
         
+        self.realtime_enabled = False
+        self.realtime_auto_pause = False
+        self.realtime_auto_unpause = True
+        self.realtime_cooldown_sec = 15.0
+        self.realtime_verbosity = "concise"
+        self.last_clarification_time = 0.0
+        self.last_clarified_text = ""
+        
         self.lock = threading.Lock()
 
     def add_frame(self, frame: FrameData):

@@ -19,9 +19,7 @@ Rules:
 
 class LLMProcessor:
     def __init__(self):
-        self.api_key = os.environ.get("GEMINI_API_KEY")
-        if not self.api_key:
-            logger.warning("GEMINI_API_KEY not set.")
+        self.api_key = None
         self.model = ""
         self.url_template = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}"
 

@@ -12,13 +12,15 @@ from capture.audio import AudioCaptureThread
 from processing.ocr import ocr_processor
 from processing.llm import llm_processor
 from buffer_manager import buffer_manager, NarrationRecord
+from processing.realtime import realtime_loop, get_event_queue
 
 screen_thread = None
 audio_thread = None
+realtime_task = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global screen_thread, audio_thread
+    global screen_thread, audio_thread, realtime_task
     logger.info("Starting Companion Service threads...")
     
     screen_thread = ScreenCaptureThread(fps=1.0)
@@ -27,6 +29,8 @@ async def lifespan(app: FastAPI):
     audio_thread = AudioCaptureThread()
     audio_thread.start()
     
+    realtime_task = asyncio.create_task(realtime_loop())
+    
     yield
     
     logger.info("Stopping capture threads...")
@@ -34,6 +38,8 @@ async def lifespan(app: FastAPI):
         screen_thread.stop()
     if audio_thread:
         audio_thread.stop()
+    if realtime_task:
+        realtime_task.cancel()
 
 app = FastAPI(title="Neurovox Companion Service", lifespan=lifespan)
 
@@ -46,11 +52,35 @@ class SettingsRequest(BaseModel):
     api_key: str
     model: str = None
 
+class RealtimeStateRequest(BaseModel):
+    enabled: bool
+    auto_pause: bool = False
+    auto_unpause: bool = True
+    cooldown_sec: float = 15.0
+    verbosity: str = "concise"
+
 @app.post("/settings")
 def update_settings(req: SettingsRequest):
     if req.api_key or req.model:
         llm_processor.update_api_key(api_key=req.api_key, model=req.model)
     return {"status": "success"}
+
+@app.post("/realtime/state")
+def update_realtime_state(req: RealtimeStateRequest):
+    buffer_manager.realtime_enabled = req.enabled
+    buffer_manager.realtime_auto_pause = req.auto_pause
+    buffer_manager.realtime_auto_unpause = req.auto_unpause
+    buffer_manager.realtime_cooldown_sec = req.cooldown_sec
+    buffer_manager.realtime_verbosity = req.verbosity
+    return {"status": "success"}
+
+@app.get("/realtime/events")
+async def get_realtime_events():
+    try:
+        event = await asyncio.wait_for(get_event_queue().get(), timeout=10.0)
+        return event
+    except asyncio.TimeoutError:
+        return {"text": None}
 
 @app.post("/narrate")
 async def narrate(req: NarrationRequest):
