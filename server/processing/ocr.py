@@ -11,7 +11,7 @@ class OcrProcessor:
     def __init__(self):
         self.engine = OcrEngine.try_create_from_user_profile_languages()
         if not self.engine:
-            logger.warning("Could not initialize native Windows OCR. Please verify language packs are installed.")
+            logger.warning("Could not initialize OCR")
 
     async def extract_text_from_bytes(self, image_bytes: bytes) -> str:
         if not self.engine:

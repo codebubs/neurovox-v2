@@ -1,4 +1,4 @@
-import os
+
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -6,13 +6,14 @@ from pydantic import BaseModel
 from loguru import logger
 import asyncio
 import time
+from typing import Optional
 
 from capture.video import ScreenCaptureThread
 from capture.audio import AudioCaptureThread
 from processing.ocr import ocr_processor
 from processing.llm import llm_processor
 from buffer_manager import buffer_manager, NarrationRecord
-from processing.realtime import realtime_loop, get_event_queue
+from processing.realtime import realtime_loop, get_event_queue, realtime_engine
 
 screen_thread = None
 audio_thread = None
@@ -23,7 +24,7 @@ async def lifespan(app: FastAPI):
     global screen_thread, audio_thread, realtime_task
     logger.info("Starting Companion Service threads...")
     
-    screen_thread = ScreenCaptureThread(fps=1.0)
+    screen_thread = ScreenCaptureThread(fps=4.0)
     screen_thread.start()
     
     audio_thread = AudioCaptureThread()
@@ -43,8 +44,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Neurovox Companion Service", lifespan=lifespan)
 
+
+
 class NarrationRequest(BaseModel):
-    mode: str = "concise" # "concise", "detailed", "ocr_only"
+    mode: str = "concise"  # "concise", "detailed", "ocr_only"
     api_key: str = None
     model: str = None
 
@@ -59,20 +62,43 @@ class RealtimeStateRequest(BaseModel):
     cooldown_sec: float = 15.0
     verbosity: str = "concise"
 
+    sensitivity: Optional[float] = None           # 0-1
+    accumulation_window_sec: Optional[float] = None
+    prefer_text_triggers: Optional[bool] = None
+
+    debug_mode: Optional[bool] = None
+    capture_active_window: Optional[bool] = None
+
+
 @app.post("/settings")
 def update_settings(req: SettingsRequest):
     if req.api_key or req.model:
         llm_processor.update_api_key(api_key=req.api_key, model=req.model)
     return {"status": "success"}
 
+
 @app.post("/realtime/state")
 def update_realtime_state(req: RealtimeStateRequest):
-    buffer_manager.realtime_enabled = req.enabled
-    buffer_manager.realtime_auto_pause = req.auto_pause
-    buffer_manager.realtime_auto_unpause = req.auto_unpause
-    buffer_manager.realtime_cooldown_sec = req.cooldown_sec
-    buffer_manager.realtime_verbosity = req.verbosity
-    return {"status": "success"}
+    realtime_engine.update_settings(
+        enabled=req.enabled,
+        auto_pause=req.auto_pause,
+        auto_unpause=req.auto_unpause,
+        cooldown_sec=req.cooldown_sec,
+        verbosity=req.verbosity,
+        sensitivity=req.sensitivity,
+        accumulation_window_sec=req.accumulation_window_sec,
+        prefer_text_triggers=req.prefer_text_triggers,
+
+        debug_mode=req.debug_mode,
+        capture_active_window=req.capture_active_window,
+    )
+
+    
+    if screen_thread and req.capture_active_window is not None:
+        screen_thread.set_capture_active_only(req.capture_active_window)
+    
+    return {"status": "success", "state": realtime_engine.state.value}
+
 
 @app.get("/realtime/events")
 async def get_realtime_events():
@@ -81,6 +107,12 @@ async def get_realtime_events():
         return event
     except asyncio.TimeoutError:
         return {"text": None}
+
+
+@app.get("/realtime/debug")
+def get_realtime_debug():
+    return realtime_engine.get_debug_info()
+
 
 @app.post("/narrate")
 async def narrate(req: NarrationRequest):
@@ -117,12 +149,15 @@ async def narrate(req: NarrationRequest):
     
     return {"text": res_text}
 
+
 @app.get("/health")
 def health_check():
     return {
         "status": "ok", 
         "frames": len(buffer_manager.frames), 
-        "audio_chunks": len(buffer_manager.audio_chunks)
+        "audio_chunks": len(buffer_manager.audio_chunks),
+        "realtime_state": realtime_engine.state.value,
+        "segments_count": len(buffer_manager.finalized_segments),
     }
 
 if __name__ == "__main__":

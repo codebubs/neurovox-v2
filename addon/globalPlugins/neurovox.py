@@ -22,7 +22,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         "realtime_auto_pause": "boolean(default=False)",
         "realtime_auto_unpause": "boolean(default=True)",
         "realtime_cooldown_sec": "integer(default=15)",
-        "realtime_verbosity": "string(default='concise')"
+        "realtime_verbosity": "string(default='concise')",
+        "realtime_sensitivity": "float(default=0.5)",
+        "realtime_accumulation_window": "float(default=0.8)",
+        "realtime_prefer_text_triggers": "boolean(default=False)",
+        "realtime_debug_mode": "boolean(default=False)",
+        "realtime_capture_active_window": "boolean(default=False)",
     }
 
     def __init__(self, *args, **kwargs):
@@ -37,7 +42,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self.realtime_auto_unpause = config.conf["neurovox"]["realtime_auto_unpause"]
         self.realtime_cooldown_sec = config.conf["neurovox"]["realtime_cooldown_sec"]
         self.realtime_verbosity = config.conf["neurovox"]["realtime_verbosity"]
-        
+
+        self.realtime_sensitivity = config.conf["neurovox"]["realtime_sensitivity"]
+        self.realtime_accumulation_window = config.conf["neurovox"]["realtime_accumulation_window"]
+        self.realtime_prefer_text_triggers = config.conf["neurovox"]["realtime_prefer_text_triggers"]
+        self.realtime_debug_mode = config.conf["neurovox"]["realtime_debug_mode"]
+        self.realtime_capture_active_window = config.conf["neurovox"]["realtime_capture_active_window"]
         self.realtime_thread_active = False
         
         self.createMenu()
@@ -73,6 +83,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         modelSizer.Add(self.modelText, 1, wx.ALL | wx.EXPAND, 5)
         mainSizer.Add(modelSizer, 0, wx.EXPAND)
         
+        mainSizer.Add(wx.StaticLine(dialog), 0, wx.EXPAND | wx.ALL, 5)
+        mainSizer.Add(wx.StaticText(dialog, label="Realtime Clarification Settings"), 0, wx.ALL, 5)
+        
         self.rtAutoPauseCb = wx.CheckBox(dialog, label="Auto-pause media")
         self.rtAutoPauseCb.SetValue(self.realtime_auto_pause)
         mainSizer.Add(self.rtAutoPauseCb, 0, wx.ALL, 5)
@@ -82,11 +95,37 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         mainSizer.Add(self.rtAutoUnpauseCb, 0, wx.ALL, 5)
         
         cdSizer = wx.BoxSizer(wx.HORIZONTAL)
-        cdLabel = wx.StaticText(dialog, label="Realtime Cooldown (sec):")
+        cdLabel = wx.StaticText(dialog, label="Cooldown (seconds):")
         self.rtCooldownText = wx.TextCtrl(dialog, value=str(self.realtime_cooldown_sec), size=(100, -1))
         cdSizer.Add(cdLabel, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
         cdSizer.Add(self.rtCooldownText, 1, wx.ALL, 5)
         mainSizer.Add(cdSizer, 0, wx.EXPAND)
+        
+        sensSizer = wx.BoxSizer(wx.HORIZONTAL)
+        sensLabel = wx.StaticText(dialog, label="Pause sensitivity (0-100):")
+        self.rtSensitivitySpin = wx.SpinCtrl(dialog, value=str(int(self.realtime_sensitivity * 100)), min=0, max=100)
+        sensSizer.Add(sensLabel, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        sensSizer.Add(self.rtSensitivitySpin, 0, wx.ALL, 5)
+        mainSizer.Add(sensSizer, 0, wx.EXPAND)
+        
+        accSizer = wx.BoxSizer(wx.HORIZONTAL)
+        accLabel = wx.StaticText(dialog, label="Accumulation window (seconds):")
+        self.rtAccWindowText = wx.TextCtrl(dialog, value=str(self.realtime_accumulation_window), size=(100, -1))
+        accSizer.Add(accLabel, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        accSizer.Add(self.rtAccWindowText, 1, wx.ALL, 5)
+        mainSizer.Add(accSizer, 0, wx.EXPAND)
+        
+        self.rtPreferTextCb = wx.CheckBox(dialog, label="Prefer text-heavy triggers")
+        self.rtPreferTextCb.SetValue(self.realtime_prefer_text_triggers)
+        mainSizer.Add(self.rtPreferTextCb, 0, wx.ALL, 5)
+        
+        self.rtActiveWindowCb = wx.CheckBox(dialog, label="Focus on active window only")
+        self.rtActiveWindowCb.SetValue(self.realtime_capture_active_window)
+        mainSizer.Add(self.rtActiveWindowCb, 0, wx.ALL, 5)
+        
+        self.rtDebugCb = wx.CheckBox(dialog, label="Debug mode (verbose logging)")
+        self.rtDebugCb.SetValue(self.realtime_debug_mode)
+        mainSizer.Add(self.rtDebugCb, 0, wx.ALL, 5)
         
         buttonSizer = dialog.CreateButtonSizer(wx.OK | wx.CANCEL)
         mainSizer.Add(buttonSizer, 0, wx.ALL | wx.ALIGN_RIGHT, 5)
@@ -102,6 +141,14 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 new_rt_cooldown = int(self.rtCooldownText.GetValue())
             except ValueError:
                 new_rt_cooldown = 15
+            new_rt_sensitivity = self.rtSensitivitySpin.GetValue() / 100.0
+            try:
+                new_rt_acc_window = float(self.rtAccWindowText.GetValue())
+            except ValueError:
+                new_rt_acc_window = 0.8
+            new_rt_prefer_text = self.rtPreferTextCb.GetValue()
+            new_rt_active_window = self.rtActiveWindowCb.GetValue()
+            new_rt_debug = self.rtDebugCb.GetValue()
             
             self.api_key = new_key
             self.model = new_model
@@ -111,16 +158,25 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             
             self.pushSettings()
             
-            if new_rt_auto_pause != self.realtime_auto_pause or new_rt_auto_unpause != self.realtime_auto_unpause or new_rt_cooldown != self.realtime_cooldown_sec:
-                self.realtime_auto_pause = new_rt_auto_pause
-                self.realtime_auto_unpause = new_rt_auto_unpause
-                self.realtime_cooldown_sec = new_rt_cooldown
-                
-                config.conf["neurovox"]["realtime_auto_pause"] = new_rt_auto_pause
-                config.conf["neurovox"]["realtime_auto_unpause"] = new_rt_auto_unpause
-                config.conf["neurovox"]["realtime_cooldown_sec"] = new_rt_cooldown
-                
-                self._pushRealtimeState()
+            self.realtime_auto_pause = new_rt_auto_pause
+            self.realtime_auto_unpause = new_rt_auto_unpause
+            self.realtime_cooldown_sec = new_rt_cooldown
+            self.realtime_sensitivity = new_rt_sensitivity
+            self.realtime_accumulation_window = new_rt_acc_window
+            self.realtime_prefer_text_triggers = new_rt_prefer_text
+            self.realtime_capture_active_window = new_rt_active_window
+            self.realtime_debug_mode = new_rt_debug
+            
+            config.conf["neurovox"]["realtime_auto_pause"] = new_rt_auto_pause
+            config.conf["neurovox"]["realtime_auto_unpause"] = new_rt_auto_unpause
+            config.conf["neurovox"]["realtime_cooldown_sec"] = new_rt_cooldown
+            config.conf["neurovox"]["realtime_sensitivity"] = new_rt_sensitivity
+            config.conf["neurovox"]["realtime_accumulation_window"] = new_rt_acc_window
+            config.conf["neurovox"]["realtime_prefer_text_triggers"] = new_rt_prefer_text
+            config.conf["neurovox"]["realtime_capture_active_window"] = new_rt_active_window
+            config.conf["neurovox"]["realtime_debug_mode"] = new_rt_debug
+            
+            self._pushRealtimeState()
             
         dialog.Destroy()
 
@@ -142,7 +198,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     "auto_pause": self.realtime_auto_pause,
                     "auto_unpause": self.realtime_auto_unpause,
                     "cooldown_sec": float(self.realtime_cooldown_sec),
-                    "verbosity": self.realtime_verbosity
+                    "verbosity": self.realtime_verbosity,
+                    "sensitivity": self.realtime_sensitivity,
+                    "accumulation_window_sec": self.realtime_accumulation_window,
+                    "prefer_text_triggers": self.realtime_prefer_text_triggers,
+
+                    "debug_mode": self.realtime_debug_mode,
+                    "capture_active_window": self.realtime_capture_active_window,
                 }).encode("utf-8")
                 req = urllib.request.Request(f"{self.server_url}/realtime/state", data=data, headers={'Content-Type': 'application/json'})
                 urllib.request.urlopen(req, timeout=5)
