@@ -20,7 +20,7 @@ To compile the release version of the server, change the production flag in main
 1. Download `neurovox.nvda-addon` from the [releases](https://github.com/codebubs/neurovox-v2/releases/latest) page.
 2. Double-click `neurovox.nvda-addon`.
 3. Restart NVDA when prompted.
-4. Configure your Gemini API Key and desired Gemini Model via NVDA Menu > Preferences > Neurovox API Settings. The addon supports models that provide `generateContent` such as `gemini-1.5-flash` and `gemini-2.5-flash-lite`.
+4. Configure your Gemini API Key and desired Gemini Model via NVDA Menu > Preferences > Neurovox API Settings. The addon supports models that provide `generateContent` such as `gemini-3.1-flash-lite-preview` and `gemini-2.5-flash-lite`.
 
 The addon can be built using `python build_addon.py`.
 
