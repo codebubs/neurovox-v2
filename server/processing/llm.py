@@ -16,17 +16,22 @@ Rules:
 5. Focus on what has CHANGED or what is currently the MAIN SUBJECT.
 """
 
-REALTIME_PROMPT = """You are a visual assistant for a blind NVDA screen reader user.
-Media playback has been paused because something important has happened. You must give a short explanation of what caused this pause.
+REALTIME_PROMPT = """You are narrating a video for a blind user. They can hear the audio themselves but cannot see what is on screen. Your task is to explain what the audio does not cover.
 
-Rules:
-1. Describe ONLY what is newly relevant in this event.
-2. Do NOT repeat content that was already explained in previous clarifications.
-3. If there is visible text, summarize it and read the most important points.
-4. If verbal audio is present, DO NOT repeat it. Instead, explain the visual content that is not covered by the speech.
-5. Do not hallucinate.
-6. Respond with natural language without markdown or asterisks.
-7. Answer: "What visual thing just happened that the user should know about?"
+Imagine they asked you, "what did I miss?" Answer that.
+
+Do:
+- Read out important on-screen text they cannot see.
+- Explain what is being shown (slides, code, charts, actions).
+- Give context that helps them follow along with is being said, if applicable.
+
+Do not:
+- Describe colors, layout, or exact positioning of visual elements.
+- Repeat anything from the audio.
+- Use markdown or asterisks. Speak naturally in a conversational tone.
+- Make anything up or hallucinate.
+
+Limit yourself to 1-3 sentences.
 """
 
 
@@ -109,7 +114,7 @@ class LLMProcessor:
 
         return self._call_api(parts, mode)
 
-    def generate_clarification(self, snapshot, verbosity: str = "concise") -> str:
+    def generate_clarification(self, snapshot, verbosity: str = "concise", previous_narration: str = "") -> str:
         if not self.api_key:
             return "Configuration error. Please enter a Gemini API Key in the NVDA Neurovox settings."
         if not self.model:
@@ -121,34 +126,18 @@ class LLMProcessor:
         parts = []
         parts.append({"text": REALTIME_PROMPT})
 
-        parts.append({
-            "text": f"Event type: {snapshot.event_type.value}. "
-                    f"Active window: {snapshot.active_window_title or 'unknown'}."
-        })
+        if previous_narration:
+            parts.append({
+                "text": f"My previous description was: \"{previous_narration}\" - do not repeat this."
+            })
 
         if snapshot.ocr_texts:
             combined_ocr = "\n---\n".join(snapshot.ocr_texts)
             parts.append({
-                "text": f"On-screen text detected during this event:\n{combined_ocr}"
+                "text": f"Text detected on screen:\n{combined_ocr}"
             })
 
-        wav_bytes = self._create_wav_from_bytes(
-            snapshot.audio_bytes,
-            snapshot.audio_sample_rate,
-            snapshot.audio_channels,
-        )
-        if wav_bytes:
-            parts.append({
-                "inline_data": {
-                    "mime_type": "audio/wav",
-                    "data": base64.b64encode(wav_bytes).decode('utf-8')
-                }
-            })
-            parts.append({"text": "The attached audio is from the event time window."})
-        else:
-            parts.append({"text": "No audio was captured during this event."})
-
-        parts.append({"text": f"Visual frames from this event ({len(snapshot.frames)} frames):"})
+        parts.append({"text": f"Here are {len(snapshot.frames)} frames from the last few seconds, in order:"})
         for frame_bytes in snapshot.frames:
             parts.append({
                 "inline_data": {
@@ -159,13 +148,11 @@ class LLMProcessor:
 
         if verbosity == "detailed":
             parts.append({
-                "text": "Provide a detailed clarification of what this visual event shows. "
-                        "Include all relevant text and visual elements."
+                "text": "What is happening in these frames? Be thorough."
             })
         else:
             parts.append({
-                "text": "Provide a very short clarification (1-3 sentences) of what caused "
-                        "this interruption and what the user should know."
+                "text": "In 1-3 sentences, what would someone need to know about what is on screen right now?"
             })
 
         return self._call_api(parts, f"realtime-{verbosity}")

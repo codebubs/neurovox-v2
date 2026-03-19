@@ -26,6 +26,7 @@ The addon can be built using `python build_addon.py`.
 
 ## Gestures / Hotkeys
 You can configure these hotkeys in NVDA's Input Gestures dialog under the "Neurovox" category. The defaults are:
-- `NVDA + N`: **Narrate Concise**. Quickly analyze and describe the current video frame and recent audio.
-- `NVDA + Shift + N`: **Narrate Detailed**. Deeply analyze and describe the current video frame and recent audio.
-- `NVDA + Control + N`: **Read On-screen Text (OCR)**. Instantly read dense text on screen (like slides or diagrams) using offline Windows OCR.
+- `NVDA + E`: **Narrate Concise**. Quickly analyze and describe the current video frame and recent audio.
+- `NVDA + Shift + E`: **Narrate Detailed**. Deeply analyze and describe the current video frame and recent audio.
+- `NVDA + Control + E`: **Read On-screen Text (OCR)**. Instantly read dense text on screen (like slides or diagrams) using native OCR.
+- `NVDA + Shift + R`: **Toggle Realtime Narration**. Automatically narrate significant visual events that are insufficiently explained by verbal audio as they happen.

@@ -18,7 +18,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     
     config.conf.spec["neurovox"] = {
         "api_key": "string(default='')",
-        "model": "string(default='gemini-1.5-flash')",
+        "model": "string(default='gemini-3.1-flash-lite-preview')",
         "realtime_auto_pause": "boolean(default=False)",
         "realtime_auto_unpause": "boolean(default=True)",
         "realtime_cooldown_sec": "integer(default=15)",
@@ -49,21 +49,38 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         self.realtime_debug_mode = config.conf["neurovox"]["realtime_debug_mode"]
         self.realtime_capture_active_window = config.conf["neurovox"]["realtime_capture_active_window"]
         self.realtime_thread_active = False
+        self._active = True
         
         self.createMenu()
-        
-        if self.api_key or self.model:
-            self.pushSettings()
-        
-        self._pushRealtimeState()
-        
-        if self.realtime_enabled:
-            self.startRealtimePoller()
+        self._startServerWatcher()
 
     def createMenu(self):
         self.prefsMenu = gui.mainFrame.sysTrayIcon.preferencesMenu
         self.settingsMenuItem = self.prefsMenu.Append(wx.ID_ANY, "Neurovox API Settings")
         gui.mainFrame.sysTrayIcon.Bind(wx.EVT_MENU, self.onSettingsDialog, self.settingsMenuItem)
+
+    def _startServerWatcher(self):
+        def watcher():
+            import time
+            up = False
+            while self._active:
+                try:
+                    req = urllib.request.Request(f"{self.server_url}/health")
+                    urllib.request.urlopen(req, timeout=1)
+                    if not up:
+                        log.info("Neurovox: Server online, pushing settings.")
+                        self.pushSettings()
+                        self._pushRealtimeState()
+                        if self.realtime_enabled:
+                            self.startRealtimePoller()
+                        up = True
+                except Exception:
+                    up = False
+                time.sleep(3.0)
+        threading.Thread(target=watcher, daemon=True).start()
+
+    def terminate(self):
+        self._active = False
 
     def onSettingsDialog(self, evt):
         dialog = wx.Dialog(gui.mainFrame, title="Neurovox Settings")

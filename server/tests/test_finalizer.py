@@ -1,178 +1,124 @@
 import sys
 import os
-import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from processing.models import (
-    WatcherSignal,
-    CandidateEvent,
     FinalizedSegment,
     ConsumedTimeline,
-    EventType,
 )
 from processing.finalizer import EventFinalizer
 
 
-def _make_signal(
-    frame_diff=0.0,
-    ocr_text="",
-    ocr_changed=False,
-    ocr_similarity=1.0,
-    text_density=0,
-    audio_rms=0.0,
-    is_silent=True,
-    frame_bytes=None,
-    timestamp=None,
-):
-    return WatcherSignal(
-        timestamp=timestamp or time.time(),
-        frame_diff=frame_diff,
-        ocr_changed=ocr_changed,
-        ocr_text=ocr_text,
-        ocr_similarity=ocr_similarity,
-        text_density=text_density,
-        audio_rms=audio_rms,
-        is_silent=is_silent,
-        frame_bytes=frame_bytes or b"\x00" * 100,
-    )
+class _Frame:
+    def __init__(self, ts, data=b"\x00" * 100):
+        self.timestamp = ts
+        self.image_bytes = data
 
 
-class TestEventFinalizer:
-    def test_open_candidate(self):
+class _Ocr:
+    def __init__(self, ts, text):
+        self.timestamp = ts
+        self.text = text
+
+
+class _Audio:
+    def __init__(self, ts, data=b"\x00" * 100):
+        self.timestamp = ts
+        self.audio_bytes = data
+        self.sample_rate = 16000
+        self.channels = 1
+
+
+class _BufferManager:
+    def __init__(self, frames=None, ocr=None, audio=None):
+        self._frames = frames or []
+        self._ocr = ocr or []
+        self._audio = audio or []
+
+    def get_frames_in_range(self, start, end):
+        return [f for f in self._frames if start <= f.timestamp <= end]
+
+    def get_ocr_in_range(self, start, end):
+        return [o for o in self._ocr if start <= o.timestamp <= end]
+
+    def get_audio_in_range(self, start, end):
+        return [a for a in self._audio if start <= a.timestamp <= end]
+
+
+class TestShouldNarrate:
+    def test_first_narration_allowed(self):
         finalizer = EventFinalizer()
-        sig = _make_signal(frame_diff=20.0)
-        candidate = finalizer.open_candidate(sig)
-        assert candidate.event_id
-        assert len(candidate.signals) == 1
-
-    def test_accumulate(self):
-        finalizer = EventFinalizer()
-        sig1 = _make_signal(frame_diff=20.0)
-        candidate = finalizer.open_candidate(sig1)
-
-        sig2 = _make_signal(frame_diff=5.0, text_density=50, ocr_text="hello world")
-        finalizer.accumulate(candidate, sig2)
-
-        assert len(candidate.signals) == 2
-        assert candidate.peak_frame_diff == 20.0
-        assert candidate.peak_text_density == 50
-
-    def test_should_keep_accumulating_within_window(self):
-        finalizer = EventFinalizer(accumulation_window_sec=1.0)
-        sig = _make_signal(frame_diff=20.0)
-        candidate = finalizer.open_candidate(sig)
-        assert finalizer.should_keep_accumulating(candidate) is True
-
-    def test_should_stop_accumulating_after_window(self):
-        finalizer = EventFinalizer(accumulation_window_sec=0.0)
-        sig = _make_signal(frame_diff=20.0)
-        candidate = finalizer.open_candidate(sig)
-        candidate.opened_at = time.time() - 1.0
-        assert finalizer.should_keep_accumulating(candidate) is False
-
-    def test_early_settle(self):
-        finalizer = EventFinalizer(accumulation_window_sec=5.0, settle_threshold=5.0)
-        sig1 = _make_signal(frame_diff=20.0)
-        candidate = finalizer.open_candidate(sig1)
-        sig2 = _make_signal(frame_diff=2.0)
-        finalizer.accumulate(candidate, sig2)
-        assert finalizer.should_keep_accumulating(candidate) is False
-
-    def test_finalize_accepted(self):
-        finalizer = EventFinalizer(min_confidence=0.1)
         timeline = ConsumedTimeline()
-
-        sig = _make_signal(frame_diff=25.0, ocr_text="New slide content", text_density=40, ocr_changed=True, ocr_similarity=0.2)
-        candidate = finalizer.open_candidate(sig)
-
-        segment, is_pause_worthy = finalizer.try_finalize(candidate, timeline)
-        assert segment is not None
-        assert segment.fingerprint != ""
-        assert segment.start_ts > 0
-
-    def test_finalize_rejected_low_confidence(self):
-        finalizer = EventFinalizer(min_confidence=0.9)
-        timeline = ConsumedTimeline()
-
-        sig = _make_signal(frame_diff=2.0, text_density=1)
-        candidate = finalizer.open_candidate(sig)
-
-        segment, is_pause_worthy = finalizer.try_finalize(candidate, timeline)
-        assert segment is None
-
-    def test_finalize_rejected_duplicate(self):
-        finalizer = EventFinalizer(min_confidence=0.1)
-        timeline = ConsumedTimeline()
-
-        sig = _make_signal(frame_diff=25.0, ocr_text="Hello World", text_density=40, ocr_changed=True, ocr_similarity=0.2)
-        candidate1 = finalizer.open_candidate(sig)
-        segment1, _ = finalizer.try_finalize(candidate1, timeline)
-        assert segment1 is not None
-
-        timeline.advance(segment1.end_ts, segment1.fingerprint)
-
-        sig2 = _make_signal(frame_diff=25.0, ocr_text="Hello World", text_density=40, ocr_changed=True, ocr_similarity=0.2)
-        candidate2 = finalizer.open_candidate(sig2)
-        segment2, _ = finalizer.try_finalize(candidate2, timeline)
-        assert segment2 is None
-
-    def test_classify_new_slide(self):
-        finalizer = EventFinalizer()
-        candidate = CandidateEvent()
-        candidate.peak_text_density = 50
-        candidate.peak_ocr_text = "• Bullet point on slide"
-        candidate.peak_frame_diff = 15.0
-        candidate.mean_audio_rms = 100.0
-
-        event_type = finalizer._classify(candidate)
-        assert event_type == EventType.NEW_SLIDE
-
-    def test_classify_code(self):
-        finalizer = EventFinalizer()
-        candidate = CandidateEvent()
-        candidate.peak_text_density = 100
-        candidate.peak_ocr_text = "def my_function():\n    import os\n    return True"
-        candidate.peak_frame_diff = 10.0
-
-        event_type = finalizer._classify(candidate)
-        assert event_type == EventType.CODE_CHANGE
-
-    def test_classify_silent_visual(self):
-        finalizer = EventFinalizer()
-        candidate = CandidateEvent()
-        candidate.peak_text_density = 3
-        candidate.peak_ocr_text = "abc"
-        candidate.peak_frame_diff = 25.0
-        candidate.mean_audio_rms = 100.0
-
-        event_type = finalizer._classify(candidate)
-        assert event_type == EventType.SILENT_VISUAL
-
-    def test_pause_worthy_high_value(self):
-        finalizer = EventFinalizer()
-        candidate = CandidateEvent()
-        candidate.peak_frame_diff = 20.0
-        candidate.mean_audio_rms = 100.0
-
-        assert finalizer._is_pause_worthy(candidate, EventType.NEW_SLIDE, 0.5) is True
-        assert finalizer._is_pause_worthy(candidate, EventType.CODE_CHANGE, 0.5) is True
-
-    def test_not_pause_worthy_audio_adequate(self):
-        finalizer = EventFinalizer()
-        candidate = CandidateEvent()
-        candidate.peak_frame_diff = 10.0
-        candidate.mean_audio_rms = 3000.0
-
-        assert finalizer._is_pause_worthy(candidate, EventType.GENERIC_VISUAL, 0.3) is False
-
-    def test_update_settings(self):
-        finalizer = EventFinalizer()
-        finalizer.update_settings(
-            accumulation_window_sec=2.0,
-            prefer_text_triggers=True,
-            sensitivity=0.8,
+        bm = _BufferManager(
+            frames=[_Frame(1.0)],
+            ocr=[_Ocr(1.0, "hello")],
         )
-        assert finalizer.accumulation_window_sec == 2.0
-        assert finalizer.prefer_text_triggers is True
-        assert finalizer.min_confidence < 0.40
+        segment, should = finalizer.should_narrate(timeline, bm)
+        assert should is True
+        assert segment is not None
+
+    def test_duplicate_rejected(self):
+        finalizer = EventFinalizer()
+        timeline = ConsumedTimeline()
+        bm = _BufferManager(
+            frames=[_Frame(1.0, b"\xaa" * 100)],
+            ocr=[_Ocr(1.0, "same text")],
+        )
+        seg1, _ = finalizer.should_narrate(timeline, bm)
+        timeline.advance(1.0, seg1.fingerprint)
+
+        seg2, should2 = finalizer.should_narrate(timeline, bm)
+        assert should2 is False
+        assert seg2 is None
+
+    def test_different_content_allowed(self):
+        finalizer = EventFinalizer()
+        timeline = ConsumedTimeline()
+        bm1 = _BufferManager(
+            frames=[_Frame(1.0, b"\xaa" * 100)],
+            ocr=[_Ocr(1.0, "first text")],
+        )
+        seg1, _ = finalizer.should_narrate(timeline, bm1)
+        timeline.advance(1.0, seg1.fingerprint)
+
+        bm2 = _BufferManager(
+            frames=[_Frame(2.0, b"\xbb" * 100)],
+            ocr=[_Ocr(2.0, "different text")],
+        )
+        seg2, should2 = finalizer.should_narrate(timeline, bm2)
+        assert should2 is True
+        assert seg2 is not None
+
+
+class TestFreezeSnapshot:
+    def test_snapshot_captures_frames(self):
+        finalizer = EventFinalizer()
+        segment = FinalizedSegment(start_ts=0.0, end_ts=5.0)
+        bm = _BufferManager(
+            frames=[_Frame(i) for i in range(6)],
+            ocr=[_Ocr(1.0, "text")],
+            audio=[_Audio(1.0)],
+        )
+        snap = finalizer.freeze_snapshot(segment, bm)
+        assert len(snap.frames) == 6
+        assert len(snap.ocr_texts) == 1
+        assert snap.start_ts == 0.0
+        assert snap.end_ts == 5.0
+
+    def test_snapshot_few_frames(self):
+        finalizer = EventFinalizer()
+        segment = FinalizedSegment(start_ts=0.0, end_ts=2.0)
+        bm = _BufferManager(
+            frames=[_Frame(0.0), _Frame(1.0), _Frame(2.0)],
+        )
+        snap = finalizer.freeze_snapshot(segment, bm)
+        assert len(snap.frames) == 3
+
+    def test_snapshot_no_audio(self):
+        finalizer = EventFinalizer()
+        segment = FinalizedSegment(start_ts=0.0, end_ts=1.0)
+        bm = _BufferManager(frames=[_Frame(0.5)])
+        snap = finalizer.freeze_snapshot(segment, bm)
+        assert snap.audio_bytes == b""
+        assert snap.audio_sample_rate == 0

@@ -57,7 +57,7 @@ class PauseHelper:
         if not system_paused:
             return
 
-        duration = max(2.0, len(text) / 14.0)
+        duration = max(1.5, len(text) / 18.0)
         start_time = time.time()
         user_unpaused = False
 
@@ -98,7 +98,6 @@ class PauseHelper:
         self, timeline: ConsumedTimeline, segment: FinalizedSegment
     ):
         timeline.advance(segment.end_ts, segment.fingerprint)
-        segment.consumed = True
         logger.debug(
             f"Timeline to {segment.end_ts:.2f}, "
             f"fingerprint {segment.fingerprint[:8]}..."

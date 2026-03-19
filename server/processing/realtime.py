@@ -6,7 +6,6 @@ from buffer_manager import buffer_manager, OcrResult
 from processing.models import (
     RealtimeState,
     ConsumedTimeline,
-    CandidateEvent,
 )
 from processing.detector import FastLocalWatcher
 from processing.finalizer import EventFinalizer
@@ -32,21 +31,21 @@ class RealtimeEngine:
         self.finalizer = EventFinalizer()
         self.helper = PauseHelper()
 
-        self._active_candidate: CandidateEvent | None = None
+        self.narration_interval: float = 10.0
+        self._timer_start: float = 0.0
 
-        self.cooldown_sec: float = 15.0
-        self._cooldown_until: float = 0.0
         self.tick_interval: float = 0.25
         self.ocr_every_n_ticks: int = 2
         self._tick_count: int = 0
         self._last_ocr_text: str = ""
         self.debug_mode: bool = False
         self.verbosity: str = "concise"
-
         self.capture_active_window: bool = False
 
-        self._pending_segment = None
-        self._pending_snapshot = None
+        self._llm_task: asyncio.Task | None = None
+        self._llm_result: str | None = None
+        self._llm_segment = None
+        self._last_narration_text: str = ""
 
         self._debug_log: list[dict] = []
         self._max_debug_entries: int = 200
@@ -54,7 +53,7 @@ class RealtimeEngine:
     def _transition(self, new_state: RealtimeState, reason: str = ""):
         old = self.state
         self.state = new_state
-        msg = f"State: {old.value} to {new_state.value}"
+        msg = f"State: {old.value} -> {new_state.value}"
         if reason:
             msg += f" ({reason})"
         logger.info(msg)
@@ -64,11 +63,17 @@ class RealtimeEngine:
 
     def enable(self):
         if self.state == RealtimeState.OFF:
-            self._transition(RealtimeState.MONITORING, "realtime enabled")
             self.timeline = ConsumedTimeline()
+            self._timer_start = time.time()
+            self.timeline.timeline_ts = self._timer_start
+            self._transition(RealtimeState.MONITORING, "realtime enabled")
 
     def disable(self):
-        self._active_candidate = None
+        if self._llm_task and not self._llm_task.done():
+            self._llm_task.cancel()
+        self._llm_task = None
+        self._llm_result = None
+        self._llm_segment = None
         self._transition(RealtimeState.OFF, "realtime disabled")
 
     async def run(self):
@@ -79,24 +84,11 @@ class RealtimeEngine:
                     await asyncio.sleep(0.5)
                     continue
 
-                if self.state == RealtimeState.COOLDOWN:
-                    if time.time() >= self._cooldown_until:
-                        self._transition(RealtimeState.MONITORING, "cooldown expired")
-                    else:
-                        await asyncio.sleep(self.tick_interval)
-                        continue
-
                 if self.state == RealtimeState.MONITORING:
                     await self._tick_monitoring()
 
-                elif self.state in (
-                    RealtimeState.CANDIDATE_OPEN,
-                    RealtimeState.CANDIDATE_ACCUMULATING,
-                ):
-                    await self._tick_accumulating()
-
-                elif self.state == RealtimeState.READY_TO_PAUSE:
-                    await self._tick_ready_to_pause()
+                elif self.state == RealtimeState.NARRATING:
+                    await self._tick_narrating()
 
             except asyncio.CancelledError:
                 logger.info("Realtime loop cancelled")
@@ -109,107 +101,81 @@ class RealtimeEngine:
 
     async def _tick_monitoring(self):
         signal = await self._collect_signal()
-        if signal is None:
-            return
 
-        self._record_debug("watcher_tick", {
-            "frame_diff": round(signal.frame_diff, 2),
-            "ocr_changed": signal.ocr_changed,
-            "text_density": signal.text_density,
-            "rms": round(signal.audio_rms, 1),
-            "score": round(signal.combined_score, 3),
-        })
+        elapsed = time.time() - self._timer_start
 
-        if signal.combined_score >= 0.20:
-            self._active_candidate = self.finalizer.open_candidate(signal)
-            self._transition(RealtimeState.CANDIDATE_OPEN, f"score={signal.combined_score:.2f}")
+        if self._llm_task is not None and self._llm_task.done():
+            try:
+                self._llm_result = self._llm_task.result()
+            except Exception as e:
+                logger.error(f"Background LLM call failed: {e}")
+                self._llm_result = None
+            self._llm_task = None
 
-    async def _tick_accumulating(self):
-        if self._active_candidate is None:
-            self._transition(RealtimeState.MONITORING, "no active candidate")
-            return
+            if self._llm_result and self._llm_segment:
+                self._transition(RealtimeState.NARRATING, "LLM response ready")
+                return
+            else:
+                self._llm_segment = None
+                self._reset_timer()
 
-        signal = await self._collect_signal()
-        if signal is not None:
-            self.finalizer.accumulate(self._active_candidate, signal)
+        if self._llm_task is None and elapsed >= self.narration_interval:
+            segment, should = self.finalizer.should_narrate(
+                self.timeline, buffer_manager
+            )
+            if should and segment is not None:
+                snapshot = self.finalizer.freeze_snapshot(segment, buffer_manager)
+                self._llm_segment = segment
+                prev = self._last_narration_text
+                self._llm_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        llm_processor.generate_clarification,
+                        snapshot, self.verbosity, prev
+                    )
+                )
+                self._record_debug("llm_dispatched", {
+                    "segment_id": segment.segment_id,
+                    "span": round(segment.end_ts - segment.start_ts, 1),
+                })
+            else:
+                self._reset_timer()
+                self._record_debug("narration_skipped", {"reason": "duplicate"})
 
-        if self.state == RealtimeState.CANDIDATE_OPEN:
-            self._transition(RealtimeState.CANDIDATE_ACCUMULATING, "accumulating")
-
-        if self.finalizer.should_keep_accumulating(self._active_candidate):
-            return
-
-        segment, pause = self.finalizer.try_finalize(
-            self._active_candidate, self.timeline
-        )
-
-        if segment is None or not pause:
-            reason = "rejected" if segment is None else "not pause-worthy"
-            self._record_debug("candidate_rejected", {
-                "event_id": self._active_candidate.event_id,
-                "reason": reason,
-            })
-            self._active_candidate = None
-            self._transition(RealtimeState.MONITORING, reason)
-            return
-
-        snapshot = self.finalizer.freeze_snapshot(
-            self._active_candidate, segment, buffer_manager
-        )
-        buffer_manager.add_segment(segment)
-        self._pending_segment = segment
-        self._pending_snapshot = snapshot
-        self._transition(RealtimeState.READY_TO_PAUSE, f"segment={segment.segment_id}")
-
-    async def _tick_ready_to_pause(self):
-        segment = self._pending_segment
-        snapshot = self._pending_snapshot
-        self._pending_segment = None
-        self._pending_snapshot = None
+    async def _tick_narrating(self):
+        segment = self._llm_segment
+        narration_text = self._llm_result
+        self._llm_segment = None
+        self._llm_result = None
 
         system_paused = await self.helper.pause_media()
         segment.pause_status = "paused" if system_paused else "skipped"
-        self._transition(
-            RealtimeState.PAUSED_FOR_CLARIFICATION,
-            "media paused" if system_paused else "pause skipped"
-        )
-
-        segment.summary_status = "generating"
-        self._record_debug("narration_start", {
-            "segment_id": segment.segment_id,
-            "event_type": segment.event_type.value,
-        })
-
-        t0 = time.time()
-        narration_text = await asyncio.to_thread(
-            llm_processor.generate_clarification, snapshot, self.verbosity
-        )
-        latency = time.time() - t0
-
         segment.summary_status = "done"
-        self._record_debug("narration_done", {
+
+        self._record_debug("narration_speaking", {
             "segment_id": segment.segment_id,
-            "latency": round(latency, 2),
             "length": len(narration_text),
+            "paused": system_paused,
         })
 
-        self._transition(RealtimeState.SPEAKING, "speaking clarification")
         event_queue = get_event_queue()
         await event_queue.put({
             "type": "speak",
             "text": narration_text,
             "timestamp": time.time(),
             "segment_id": segment.segment_id,
-            "event_type": segment.event_type.value,
         })
 
         await self.helper.handle_post_clarification(
             narration_text, system_paused, event_queue
         )
+        self._last_narration_text = narration_text
         self.helper.advance_timeline(self.timeline, segment)
-        self._cooldown_until = time.time() + self.cooldown_sec
-        self._active_candidate = None
-        self._transition(RealtimeState.COOLDOWN, f"cooldown {self.cooldown_sec}s")
+        buffer_manager.add_segment(segment)
+        self._reset_timer()
+        self._transition(RealtimeState.MONITORING, "narration complete")
+
+    def _reset_timer(self):
+        self._timer_start = time.time()
 
     async def _collect_signal(self):
         self._tick_count += 1
@@ -264,16 +230,11 @@ class RealtimeEngine:
         if auto_unpause is not None:
             self.helper.update_settings(auto_unpause=auto_unpause)
         if cooldown_sec is not None:
-            self.cooldown_sec = cooldown_sec
+            self.narration_interval = cooldown_sec
         if verbosity is not None:
             self.verbosity = verbosity
         if sensitivity is not None:
             self.watcher.update_sensitivity(sensitivity)
-            self.finalizer.update_settings(sensitivity=sensitivity)
-        if accumulation_window_sec is not None:
-            self.finalizer.update_settings(accumulation_window_sec=accumulation_window_sec)
-        if prefer_text_triggers is not None:
-            self.finalizer.update_settings(prefer_text_triggers=prefer_text_triggers)
         if debug_mode is not None:
             self.debug_mode = debug_mode
         if capture_active_window is not None:
@@ -291,13 +252,9 @@ class RealtimeEngine:
         return {
             "state": self.state.value,
             "timeline_ts": self.timeline.timeline_ts,
-            "timeline_fingerprints": len(self.timeline.last_fingerprints),
-            "cooldown_remaining": max(0, self._cooldown_until - time.time()),
-            "active_candidate": (
-                self._active_candidate.event_id
-                if self._active_candidate else None
-            ),
-
+            "timer_elapsed": round(time.time() - self._timer_start, 1),
+            "narration_interval": self.narration_interval,
+            "llm_pending": self._llm_task is not None and not self._llm_task.done(),
             "recent_events": self._debug_log[-20:] if self.debug_mode else [],
         }
 

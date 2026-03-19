@@ -31,7 +31,7 @@ class NarrationRecord(BaseModel):
 
 
 class BufferManager:
-    def __init__(self, frame_retention_sec=15.0, audio_retention_sec=15.0, ocr_retention_sec=15.0):
+    def __init__(self, frame_retention_sec=30.0, audio_retention_sec=30.0, ocr_retention_sec=30.0):
         self.frame_retention_sec = frame_retention_sec
         self.audio_retention_sec = audio_retention_sec
         self.ocr_retention_sec = ocr_retention_sec
@@ -90,6 +90,10 @@ class BufferManager:
             if not self.ocr_results:
                 return ""
             return self.ocr_results[-1].text
+
+    def get_ocr_in_range(self, start: float, end: float) -> List[OcrResult]:
+        with self.lock:
+            return [o for o in self.ocr_results if start <= o.timestamp <= end]
 
     def add_narration(self, narration: NarrationRecord):
         with self.lock:

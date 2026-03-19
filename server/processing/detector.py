@@ -11,15 +11,17 @@ from processing.models import WatcherSignal
 class FastLocalWatcher:
     def __init__(
         self,
-        frame_diff_threshold: float = 8.0,
+        frame_diff_threshold: float = 12.0,
         silence_rms_threshold: float = 1500.0,
         ocr_change_threshold: float = 0.80,
         min_text_density: int = 5,
+        calm_ticks_needed: int = 2,
     ):
         self.frame_diff_threshold = frame_diff_threshold
         self.silence_rms_threshold = silence_rms_threshold
         self.ocr_change_threshold = ocr_change_threshold
         self.min_text_density = min_text_density
+        self.calm_ticks_needed = calm_ticks_needed
 
         self._last_frame_thumb: np.ndarray | None = None
         self._last_ocr_text: str = ""
@@ -83,11 +85,11 @@ class FastLocalWatcher:
 
     def update_sensitivity(self, sensitivity: float):
         sensitivity = max(0.0, min(1.0, sensitivity))
-        self.frame_diff_threshold = 15.0 - (sensitivity * 12.0)
+        self.frame_diff_threshold = 20.0 - (sensitivity * 14.0)
         self.silence_rms_threshold = 1000.0 + (sensitivity * 2000.0)
         self.ocr_change_threshold = 0.90 - (sensitivity * 0.25)
         logger.debug(
-            f"Watcher sensitivity={sensitivity:.2f}"
+            f"Watcher sensitivity={sensitivity:.2f} "
             f"frame_diff_thr={self.frame_diff_threshold:.1f}, "
             f"silence_rms_thr={self.silence_rms_threshold:.0f}, "
             f"ocr_change_thr={self.ocr_change_threshold:.2f}"
