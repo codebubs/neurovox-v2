@@ -11,3 +11,4 @@ winrt-Windows.Graphics.Imaging
 winrt-Windows.Storage.Streams
 winrt-Windows.Media.Control
 loguru
+pystray

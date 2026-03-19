@@ -14,7 +14,7 @@ Or, run the server manually:
 4. `pip install -r requirements.txt`
 5. `python main.py`
 
-To compile the release version of the server, run `build_exe.bat`.
+To compile the release version of the server, change the production flag in main to `True` and run `build_exe.bat`.
 
 ### Installing the NVDA Add-on
 1. Download `neurovox.nvda-addon` from the [releases](https://github.com/codebubs/neurovox-v2/releases/latest) page.

@@ -1,4 +1,7 @@
-
+import subprocess
+import threading
+import sys
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -14,6 +17,10 @@ from processing.ocr import ocr_processor
 from processing.llm import llm_processor
 from buffer_manager import buffer_manager, NarrationRecord
 from processing.realtime import realtime_loop, get_event_queue, realtime_engine
+
+import pystray
+from pystray import MenuItem as item
+from PIL import Image, ImageDraw, ImageFont
 
 screen_thread = None
 audio_thread = None
@@ -158,7 +165,34 @@ def health_check():
         "audio_chunks": len(buffer_manager.audio_chunks),
         "realtime_state": realtime_engine.state.value,
         "segments_count": len(buffer_manager.finalized_segments),
+        "has_api_key": llm_processor.api_key is not None
     }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
+    if False: # production
+        def image():
+            image = Image.new('RGB', (64, 64), color=(30, 30, 30))
+            dc = ImageDraw.Draw(image)
+            font = ImageFont.load_default(44)
+            dc.text((2, 4), "NV", font=font, fill=(0, 255, 150))
+            return image
+
+        def on_exit(icon, item):
+            icon.stop()
+            os._exit(0)
+
+        def run_server():
+            try:
+                uvicorn.run(app, host="127.0.0.1", port=8000, reload=False, log_config=None)
+            except Exception:
+                logger.exception("Uvicorn crashed")
+
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+
+        icon = pystray.Icon("Neurovox", image(), "Neurovox Companion", menu=pystray.Menu(
+            item('Exit', on_exit)
+        ))
+        icon.run()
+    else:
+        uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

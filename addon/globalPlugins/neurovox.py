@@ -62,26 +62,23 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     def _startServerWatcher(self):
         def watcher():
             import time
-            up = False
             while self._active:
                 try:
                     req = urllib.request.Request(f"{self.server_url}/health")
                     with urllib.request.urlopen(req, timeout=3) as resp:
-                        resp.read()
-                    if not up:
-                        log.info("Neurovox: Server online, pushing settings.")
+                        has_api_key = json.loads(resp.read().decode("utf-8")).get("has_api_key")
+                    log.info("Neurovox: Server online, pushing settings.")
+                    if not has_api_key:
                         try:
                             self.pushSettings(sync=True)
                             self._pushRealtimeState(sync=True)
                             if self.realtime_enabled:
                                 self.startRealtimePoller()
-                            up = True
                         except Exception as e:
-                            log.error(f"Neurovox: Initialization failed - {e}")
-                            up = False
+                            log.error(f"Neurovox: Initialization sequence failed - {e}")
                 except Exception:
-                    up = False
-                time.sleep(3.0)
+                    pass
+                time.sleep(3)
         threading.Thread(target=watcher, daemon=True).start()
 
     def terminate(self):
