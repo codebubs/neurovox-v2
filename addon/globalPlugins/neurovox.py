@@ -66,14 +66,19 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             while self._active:
                 try:
                     req = urllib.request.Request(f"{self.server_url}/health")
-                    urllib.request.urlopen(req, timeout=1)
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        resp.read()
                     if not up:
                         log.info("Neurovox: Server online, pushing settings.")
-                        self.pushSettings()
-                        self._pushRealtimeState()
-                        if self.realtime_enabled:
-                            self.startRealtimePoller()
-                        up = True
+                        try:
+                            self.pushSettings(sync=True)
+                            self._pushRealtimeState(sync=True)
+                            if self.realtime_enabled:
+                                self.startRealtimePoller()
+                            up = True
+                        except Exception as e:
+                            log.error(f"Neurovox: Initialization failed - {e}")
+                            up = False
                 except Exception:
                     up = False
                 time.sleep(3.0)
@@ -197,17 +202,23 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             
         dialog.Destroy()
 
-    def pushSettings(self):
+    def pushSettings(self, sync=False):
         def worker():
             try:
                 data = json.dumps({"api_key": self.api_key, "model": self.model}).encode("utf-8")
                 req = urllib.request.Request(f"{self.server_url}/settings", data=data, headers={'Content-Type': 'application/json'})
-                urllib.request.urlopen(req, timeout=5)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read()
             except Exception as e:
                 log.error(f"Neurovox: Error pushing settings - {e}")
-        threading.Thread(target=worker).start()
+                if sync: raise
+        
+        if sync:
+            worker()
+        else:
+            threading.Thread(target=worker).start()
 
-    def _pushRealtimeState(self):
+    def _pushRealtimeState(self, sync=False):
         def worker():
             try:
                 data = json.dumps({
@@ -219,15 +230,20 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     "sensitivity": self.realtime_sensitivity,
                     "accumulation_window_sec": self.realtime_accumulation_window,
                     "prefer_text_triggers": self.realtime_prefer_text_triggers,
-
                     "debug_mode": self.realtime_debug_mode,
                     "capture_active_window": self.realtime_capture_active_window,
                 }).encode("utf-8")
                 req = urllib.request.Request(f"{self.server_url}/realtime/state", data=data, headers={'Content-Type': 'application/json'})
-                urllib.request.urlopen(req, timeout=5)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read()
             except Exception as e:
                 log.error(f"Neurovox: Error pushing realtime state - {e}")
-        threading.Thread(target=worker).start()
+                if sync: raise
+                
+        if sync:
+            worker()
+        else:
+            threading.Thread(target=worker).start()
 
     def startRealtimePoller(self):
         if self.realtime_thread_active: return
@@ -238,8 +254,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             while self.realtime_enabled:
                 try:
                     req = urllib.request.Request(f"{self.server_url}/realtime/events")
-                    resp = urllib.request.urlopen(req, timeout=12)
-                    body = json.loads(resp.read().decode("utf-8"))
+                    with urllib.request.urlopen(req, timeout=12) as resp:
+                        body = json.loads(resp.read().decode("utf-8"))
                     text = body.get("text")
                     event_type = body.get("type", "speak")
                     
@@ -264,8 +280,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             try:
                 data = json.dumps({"mode": mode, "api_key": self.api_key, "model": self.model}).encode("utf-8")
                 req = urllib.request.Request(f"{self.server_url}/narrate", data=data, headers={"Content-Type": "application/json"})
-                resp = urllib.request.urlopen(req, timeout=20)
-                body = json.loads(resp.read().decode("utf-8"))
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
                 text = body.get("text", "Error: No text returned.")
                 ui.message(text)
             except urllib.error.URLError as e:

@@ -52,7 +52,7 @@ class NarrationRequest(BaseModel):
     model: str = None
 
 class SettingsRequest(BaseModel):
-    api_key: str
+    api_key: str = None
     model: str = None
 
 class RealtimeStateRequest(BaseModel):
